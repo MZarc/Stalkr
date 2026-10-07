@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Rust build cache (tens of GB, regenerable via cargo / tauri build).
+# Covers target/, target-test/, target_check/, etc.
+src-tauri/target*/
+
+# Android / Gradle outputs & caches (regenerable via tauri android build).
+src-tauri/gen/android/build/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/app/.cxx/
+src-tauri/gen/android/.kotlin/
+# Machine-specific SDK/NDK paths; recreated from ANDROID_HOME or Tauri CLI.
+src-tauri/gen/android/local.properties
+
+# Release binaries — kept locally in release/, not bloating git.
+*.apk
+*.aab
+release/
