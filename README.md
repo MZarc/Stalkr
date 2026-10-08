@@ -4,7 +4,7 @@
 
 # Stalkr
 
-**A private, local-first Android app for accurately tracking Instagram followers, following, and relationship changes — for your own profile and the people you monitor.**
+**A private, local-first Android app for keeping an eye on Instagram followers, following, and relationship changes — for your own profile and people you monitor, with safeguards designed to reduce false reports.**
 
 [![Android](https://img.shields.io/badge/Android-API%2024%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com)
 [![arm64](https://img.shields.io/badge/ABI-arm64--v8a-blueviolet)](https://developer.android.com/ndk/guides/abis)
@@ -21,13 +21,13 @@
 
 ## ✨ Why Stalkr
 
-Most follower trackers lie to you: one flaky API response becomes "47 people unfollowed you". Stalkr was built around a single obsession — **never report a change that didn't really happen**:
+Follower lists from Instagram can wobble between requests, and naive trackers turn every wobble into phantom events. Stalkr is built around safeguards meant to — reduce false reports — it tries hard **not to report changes it cannot stand behind**:
 
-- **Two-cycle event confirmation** — a disappearance only becomes an "unfollow" if it's still gone on the *next* sync; single-sync list flaps die silently and never touch your feed.
-- **Dual-surface fetching** — primary mobile endpoint + Instaloader-style web GraphQL surface, unioned. The union can only *add* missed members, never manufacture unfollows.
-- **Honest headline counts** — the dashboard shows Instagram's official header count (matching the Instagram app) with your verified tracked list beneath it. The small residual gap (deactivated/restricted accounts Instagram counts but serves to no one) is labeled, not hidden.
+- **Two-cycle event confirmation** — a disappearance is held aside first and only enters your feed if it's still gone on the *next* sync, so one-off list wobbles stay out of your history.
+- **Dual-surface fetching** — primary mobile endpoint + Instaloader-style web GraphQL surface, unioned. The union step is additive by construction (it adds members the first surface missed but never removes anyone on its own), which narrows coverage gaps without inventing removals.
+- **Honest headline counts** — the dashboard leads with Instagram's official header count (aiming to match what the Instagram app shows) and shows your verified tracked list underneath it. The small residual gap (deactivated/restricted accounts Instagram counts but serves to no one) is labeled, not hidden.
 - **Quarantine, not fiction** — truncated pages, rate limits, and revoked access produce clear "incomplete, nothing stored" states instead of fake events.
-- **Session-safe by design** — human-paced jittered requests, exponential backoff on HTTP 429, a local sync cooldown, and background sync with randomized stealth windows. No hammering, no ban-bait behavior.
+- **Session-safe by design** — human-paced jittered requests, backoff on HTTP 429 with a full stop under repeated throttling, a local sync cooldown, and randomized background-sync windows. This is intended to keep load minimal, but no third-party tool can promise Instagram will never throttle or flag automated access — keep schedules conservative (hourly is the recommended default) and use at your own risk.
 - **Username-change tracking** — identity is keyed on stable numeric Instagram IDs, so `priya_99` → `priya.sharma` records one rename event instead of a phantom unfollow + follow pair.
 
 ## 📱 Features
@@ -111,12 +111,14 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust suite: diff engine,
 
 ---
 
-## 🧠 How accuracy works (the 30-second version)
+## 🧠 How it tries to stay honest (and where it can still be wrong)
 
 1. Each sync paginates the full follower + following lists, then — only if Instagram's own header says members are missing — pulls the secondary web surface and unions both.
 2. Results are reconciled against Instagram's official counts: catastrophic corruption is quarantined (nothing stored, clear message); moderate gaps flow through labeled `Unconfirmed`.
 3. Candidate follow/unfollow events wait one more sync for confirmation; flaps are discarded; reappearances after a single miss are ignored rather than reported as "new".
-4. Counts in the UI always reflect the latest verified list; the dashboard headline matches Instagram's official number.
+4. Counts in the UI reflect the latest verified list; the dashboard headline follows Instagram's official number when it can be fetched.
+
+Known limits, stated plainly: the first sync of any profile is only a baseline (no events by design); real follows/unfollows generally appear one sync later than they happen; a few untrackable accounts (deactivated, restricted) may keep the tracked list slightly below the official total; and if Instagram serves inconsistent slices on back-to-back syncs, some true events can be delayed while contradictions resolve.
 
 ## 🛡️ Privacy & safety
 
@@ -160,6 +162,10 @@ Regenerable (gitignored) artifacts: `src-tauri/target*/`, Gradle `build/` + `.gr
 | *Empty lists / reconnect* on first sync | Session isn't returning data — reconnect Instagram, then sync |
 | Target shows `not_accessible` | Your logged-in account can't view that list (private + not a follower). Nothing is recorded — by design |
 | Changes page empty after 1st sync | Expected — the first sync is the baseline; events start from the 2nd sync |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## ⚠️ Disclaimer
 

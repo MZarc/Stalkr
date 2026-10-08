@@ -2,57 +2,35 @@
 
 ## 1. Provider Isolation Overview
 
-Instagram frequently modifies internal web endpoints, GraphQL query hashes, and rate-limiting responses. Stalkr decouples all network transport and parsing logic behind the `InstagramProvider` Rust trait:
+Instagram's unofficial endpoints, rate limits, and response shapes change over time. Stalkr decouples all network transport and parsing behind the `InstagramProvider` Rust trait (`src-tauri/src/providers/provider_trait.rs`):
 
-```rust
-#[async_trait]
-pub trait InstagramProvider: Send + Sync {
-    async fn fetch_profile(&self, username: &str) -> Result<InstagramUser, ProviderError>;
-    async fn fetch_followers(&self, user_id: &str) -> Result<Vec<InstagramUser>, ProviderError>;
-    async fn fetch_following(&self, user_id: &str) -> Result<Vec<InstagramUser>, ProviderError>;
-    fn provider_type(&self) -> &'static str;
-}
-```
-
-No view, command handler, or database routine ever depends on raw HTTP endpoints or response payloads.
+- Core list/profile/access methods, plus **defaulted no-op secondary-surface methods** that only the live session provider overrides — so a dead secondary source can never break a sync.
+- Shared helpers (e.g. multi-surface union with ID-first, case-insensitive-username-fallback identity keys) live next to the trait.
+- No view, command handler, or database routine depends on raw HTTP endpoints or response payloads.
 
 ---
 
 ## 2. Production Providers
 
 ### 2.1 Authenticated Session Provider
-- **Purpose**: Direct live synchronization using an active Instagram Web session.
-- **Headers & Identity**:
-  - `User-Agent`: Modern Android mobile web browser user agent.
-  - `X-IG-App-ID`: `936619743392459` (Current mobile web client application ID).
-  - `Accept`: `*/*`
-- **Cursor Pagination**: Follower and following lists are retrieved in sequential chunks via cursor pagination (`max_id` or GraphQL cursors).
-- **Rate-Limiting & Jitter**:
-  - Automatically handles HTTP `429 Too Many Requests`.
-  - Introduces randomized exponential jitter between page fetches (1.5s - 4.5s) to avoid burst detection.
-  - Halts pagination immediately upon receiving a `checkpoint_required` or session invalidation response without emitting false unfollows.
+- **Purpose**: Live synchronization using the user's own Instagram login session.
+- **Primary surface**: Mobile friendships endpoints (`friendships/{id}/followers|following`), cursor-paginated.
+- **Secondary surface** (best-effort): Web GraphQL follower/following edges in the style popularised by Instaloader. It runs **only** when Instagram's own header count says the primary surface came up short, is capped in pages, and any failure (HTTP 429/400, retired query hashes, schema drift) is silently ignored with the primary result standing alone. The union step is additive by construction.
+- **Pacing & backoff** (aimed at keeping load minimal — not a guarantee of any outcome):
+  - ~0.9–1.5s jittered delay between pages (fixed machine-like intervals are avoided on purpose).
+  - On HTTP 429: back off ~4s, then ~9s, then stop the sync entirely and report rate-limited rather than pushing through.
+  - A local per-account sync cooldown plus randomized background-sync windows further spread load.
+- **Session handling**: HTTP 401/403 surfaces as session-expired (re-authenticate), never as data. Numeric user-ID resolution never falls back to local UUIDs — failing loudly beats fetching the wrong person's list.
 
 ### 2.2 Official Multi-Shard Export Provider
-- **Purpose**: Completely safe, zero-risk import of official Instagram account downloads.
-- **Multi-Shard Shard Discovery**:
-  Meta exports partition large follower lists into multiple JSON shards:
-  ```
-  followers_and_following/
-      ├── followers_1.json
-      ├── followers_2.json
-      ├── followers_3.json
-      └── following.json
-  ```
-  The parser scans for any file matching `followers*.json` (regex or glob) rather than hardcoding a single filename.
-- **Resilient Parsing**:
-  Supports both schema variants:
-  - Variant A: Top-level array of `{ "string_list_data": [{ "value": "username", "timestamp": 1234567890 }] }`
-  - Variant B: Root object `{ "relationships_followers": [ ... ] }`
+- **Purpose**: Importing official Instagram data-download archives — the lowest-risk data source since it needs no live session at all.
+- **Shard discovery**: scans `followers*.json` / `following*.json` across the export directory (including `followers_and_following/` and `connections/` layouts) and de-duplicates case-insensitively.
+- **Schema tolerance**: handles both the top-level-array shape and the `relationships_following` / `relationships_followers` object shapes. Export rows carry no numeric IDs, so identity backfills by username when live data later provides IDs.
+- Imports are treated as ground truth for the imported account (no confirmation delay).
 
 ### 2.3 Public Profile Inspector Provider
-- **Purpose**: Unauthenticated profile inspection for basic metadata.
-- **Strict Boundary**: Fetches public bio, follower/following counts, profile picture URL, and verified badge.
-- **Safety Rule**: **Never attempts follower or following list scraping**. Unauthenticated scraping of relationships is structurally unreliable and violates Stalkr's core principle of correctness over fake completeness.
+- **Purpose**: Unauthenticated metadata only (counts, avatar, verification flag).
+- **Strict boundary**: never attempts relationship-list retrieval.
 
 ---
 
@@ -61,18 +39,17 @@ No view, command handler, or database routine ever depends on raw HTTP endpoints
 ### 3.1 Deterministic Fixture Provider
 - **Purpose**: Offline development, unit testing, and UI verification.
 - **Characteristics**: Generates synthetic, deterministic relationship graphs with customizable follower, following, and mutual counts.
-- **Labeling Non-Negotiable**: Whenever data originates from the Fixture Provider, the UI permanently renders a high-visibility badge: `DEMO DATA`.
+- Whenever fixture data is on screen, the UI labels it demo data.
 
 ---
 
 ## 4. Provider Diagnostics & Health States
 
-Each provider reports health status through the `get_provider_health` IPC command:
+`get_provider_health` reports a `ProviderHealthStatus` with connectivity, per-list retrieval flags, pagination/completeness flags, last successful sync, provider version, and the last error text. Access checks for monitored targets resolve to one of: `accessible`, `not_accessible`, `auth_required`, `rate_limited`, `provider_error`, or `unknown` (with a stored-ID direct probe as fallback before giving up with `unknown`).
 
-| Health State | Meaning | Suggested User Action |
+| Situation | Meaning | Suggested user action |
 |---|---|---|
-| `HEALTHY` | Provider is responsive and operating normally | None |
-| `RATE_LIMITED` | HTTP 429 received from Meta servers | Back off sync; retry automatically in 15–60 minutes |
-| `SESSION_EXPIRED` | Instagram session cookies invalid or logged out | Re-authenticate via Settings > Session |
-| `CHECKPOINT_REQUIRED` | Instagram requested 2FA or security challenge | Log into Instagram app/web to resolve checkpoint |
-| `EXPORT_PARSED` | Official archive loaded successfully | Safe to inspect historical data |
+| Rate limited (HTTP 429) | Instagram is throttling this session | Wait 15–30 minutes; prefer the hourly schedule |
+| Session expired / auth required | Saved session no longer accepted | Re-authenticate from the connect screen |
+| Not accessible | List not visible through this session (e.g. private target, not a follower) | Nothing is recorded — by design; check follow status |
+| Unknown after recheck | Neither profile lookup nor direct probe resolved | Verify the username/ID, reconnect, retry once |

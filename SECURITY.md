@@ -1,75 +1,39 @@
 # Stalkr Security Specification
 
+> What this document claims is limited to what the code in `src-tauri/src/security/` and the Android shell actually does. Anything stronger (hardware-backed keys, biometric-bound crypto) is a roadmap item, not a current property.
+
 ## 1. Threat Model & Security Posture
 
-Stalkr is designed under the assumption of an untrusted mobile environment where physical device access, OS backups, and memory inspection could occur. The application adheres to a zero-trust model toward third-party servers and cloud providers: **no user data ever leaves the local device**.
+Stalkr assumes a phone that could be lost, backed up, or inspected. The posture is simple: keep everything on-device, encrypt secrets at rest, and never send user data anywhere except Instagram's own servers during a sync the user initiated.
 
 ---
 
-## 2. Dual Keystore Architecture
+## 2. Encryption at Rest (What Exists Today)
 
-Stalkr partitions security keys into two distinct cryptographic domains to balance headless background automation with high-assurance biometric protection:
+Sessions and private notes are encrypted with **AES-256-GCM** (authenticated encryption) before touching SQLite:
 
-```
-+-------------------------------------------------------------------------+
-|                              Android Keystore                           |
-+------------------------------------+------------------------------------+
-|               Domain A             |              Domain B              |
-|        Background Service Key      |      App-Lock & Private Data Key   |
-+------------------------------------+------------------------------------+
-| * Hardware-backed (TEE/StrongBox)  | * Hardware-backed (TEE/StrongBox)  |
-| * Unauthenticated access           | * Biometric authentication bound   |
-| * Dedicated to WorkManager sync    | * Requires BiometricPrompt auth    |
-| * Encrypts provider session tokens | * Unlocks UI session               |
-| * Cannot decrypt user notes        | * Encrypts sensitive private notes |
-+------------------------------------+------------------------------------+
-```
+- **Key derivation**: SHA-256 over app-defined domain-separation strings (e.g. a session domain and per-note seeds) into 32-byte keys. This is *not* HKDF, and keys are **not** currently held in the Android Keystore — they are derived in-app. Moving key material into hardware-backed storage is planned work, not a shipped property.
+- **Nonce**: 96-bit random value per encryption, stored alongside the ciphertext (both Base64).
+- **Payloads**: Instagram session JSON (`session_id`, `ds_user_id`, tokens/cookies) in `account_sessions`; note bodies in `notes` (`content_ciphertext` + `nonce`, one row per account+person).
+- **Database file itself is not encrypted at rest** — protection comes from the Android app sandbox plus the per-value encryption above. A rooted device or a backup with the app data could expose metadata (usernames, counts, timestamps).
 
-### 2.1 Key A: Background Service Domain
-- **Usage**: Used exclusively by `SyncWorker` and the JNI bridge during headless background execution.
-- **Access Rule**: Requires device-level encryption, but does **not** prompt for biometric authentication, allowing WorkManager to operate when the device is locked.
-- **Scope**: Can read/write network session tokens and update `relationship_state`. Strictly barred from accessing or decrypting private notes.
+### 2.1 Roles (Enforced by Code Paths, Not by Hardware Domains)
 
-### 2.2 Key B: User-Facing Biometric Domain
-- **Usage**: User interface unlock and personal note encryption/decryption.
-- **Access Rule**: Cryptographically bound to the user's biometric enrolled credentials (`setUserAuthenticationRequired(true)`).
-- **Scope**: Decrypts the master note encryption key into transient memory only while the UI is unlocked. Memory is wiped when the app transitions to the background.
+- **Background sync** (`SyncWorker` → JNI → Rust) can decrypt *sessions* to run headless syncs. It has no code path that decrypts notes.
+- **Notes** are only decrypted in UI flows (with the app-lock/biometric gate in front where enabled).
 
 ---
 
-## 3. Note Encryption at Rest
+## 3. Session & Secret Hygiene
 
-All user notes attached to accounts or profiles are encrypted before being written to SQLite using authenticated symmetric encryption:
-
-- **Algorithm**: `AES-256-GCM` (Galois/Counter Mode).
-- **Key Derivation**: SHA-256 HKDF over Key B master material.
-- **Nonce/IV**: 96-bit (12-byte) cryptographically secure pseudorandom number generated per encryption operation via OS CSPRNG.
-- **Authentication Tag**: 128-bit (16-byte) GMAC integrity tag.
-- **Payload Format**: Base64-encoded binary packet:
-  ```
-  [ 12-byte IV ] + [ Ciphertext ] + [ 16-byte GCM Tag ]
-  ```
-- **Database Schema**:
-  ```sql
-  CREATE TABLE notes (
-      id TEXT PRIMARY KEY,
-      target_type TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      ciphertext TEXT NOT NULL,
-      nonce TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-  );
-  ```
+1. **No hardcoded secrets**: the repository contains no session cookies, tokens, or API keys (verified by pattern scan). Credentials only ever enter at runtime via the user's own login.
+2. **Transport**: outbound traffic uses HTTPS via `rustls`. Release builds set `usesCleartextTraffic=false`; debug builds allow cleartext only for the local Vite dev server.
+3. **Log caution**: logs may contain operational metadata (sync states, counts). verbose logging of raw network bodies is avoided; users sharing logs should still redact by hand anything sensitive.
 
 ---
 
-## 4. Session Token Isolation & Sanitization
+## 4. Honest Limitations
 
-1. **No Hardcoded Tokens**: No default session cookies or API keys exist in the repository.
-2. **Log Sanitization**: The logging pipeline (`tauri-plugin-log`) enforces strict redaction filters:
-   - All `sessionid`, `csrftoken`, `ds_user_id`, and `Authorization` headers are masked as `[REDACTED]`.
-   - Raw HTTP responses containing account passwords or challenge codes are truncated and discarded before log emission.
-3. **Transport Security**:
-   - Outbound requests use modern TLS 1.3 via `rustls`.
-   - Android release builds explicitly enforce `android:usesCleartextTraffic="false"` in `AndroidManifest.xml`.
+- Encryption is only as strong as the device: no verified-boot/attestation checks, no anti-tamper, no remote wipe.
+- The app cannot prevent Instagram from throttling, challenging, or flagging automated access — see the cautious request etiquette in [PROVIDER.md](PROVIDER.md) and the disclaimer in [README.md](README.md).
+- Backups of app data carry the encrypted database; anyone with the backup and the app's derivation logic faces only the AES layer, not hardware binding.
