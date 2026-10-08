@@ -18,7 +18,7 @@ Stalkr is a personal, private Android application for keeping an eye on Instagra
 ```mermaid
 flowchart TD
     subgraph Frontend["Frontend Layer (Svelte 5 Runes + TypeScript + Vite)"]
-        UI["Views: Pulse, People, Changes, Monitor, Settings"]
+        UI["Views: Dashboard, Circle, Changes, Sync, Settings"]
         State["Svelte 5 Runes ($state, $derived)"]
         IPC_Client["Tauri IPC Client (invoke)"]
         UI --> State --> IPC_Client

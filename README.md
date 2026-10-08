@@ -34,10 +34,10 @@ Follower lists from Instagram can wobble between requests, and naive trackers tu
 
 | View | What you get |
 |---|---|
-| **Pulse** | Official follower/following counts, tracked-list coverage, 7-day net change, 7-day velocity sparkline with real weekday labels, reciprocity gauge |
-| **People** | Full directory with filters: All, Mutuals, Not Following Back, Fans + search |
+| **Dashboard** | Official follower/following counts, tracked-list coverage, 7-day net change, 7-day velocity sparkline with real weekday labels, reciprocity gauge |
+| **Circle** | Full directory with filters: All, Mutuals, Not Following Back, Fans + search |
 | **Changes** | Confirmed-only audit feed: Gained, Lost, Outbound, Renames |
-| **Monitor** | Per-target sync, access-state checks (accessible / not accessible / rate-limited / session expired), stealth background-sync scheduling |
+| **Sync** | Per-target sync, access-state checks (accessible / not accessible / rate-limited / session expired), stealth background-sync scheduling |
 | **Settings** | Official Instagram ZIP export import, encrypted notes, app lock, database wipe |
 
 Under the hood: snapshot history in local SQLite, AES-256-GCM encrypted sessions and notes, headless background sync via Android `WorkManager` + JNI bridge, and a demo mode with clearly-labeled synthetic data.
@@ -104,10 +104,10 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust suite: diff engine,
 ### 5. Using the app
 
 1. Open the app → connect your Instagram via the official in-app login (your session is encrypted on-device; nothing is sent anywhere except Instagram itself).
-2. Your profile syncs automatically — counts appear on Pulse.
-3. Add a target with **Monitor → +** (private targets require your logged-in account to be an approved follower).
+2. Your profile syncs automatically — counts appear on the Dashboard.
+3. Add a target with **Sync → +** (private targets require your logged-in account to be an approved follower).
 4. Sync each profile from its view. The **first** sync is always a baseline (no change events by design); gains, losses, and renames start appearing from the **second** sync onward, after two-cycle confirmation.
-5. Optional: enable stealth background sync per target from the Monitor view.
+5. Optional: enable stealth background sync per target from the Sync view.
 
 ---
 
